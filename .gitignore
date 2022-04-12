@@ -1,2 +1,6 @@
 cmake-build-debug
 .idea
+Testing
+testy-zad1-main/env
+testy-zad1-main/__pycache__
+testy-zad1-main/event_files/generated/*
