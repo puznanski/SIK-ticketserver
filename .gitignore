@@ -4,3 +4,9 @@ Testing
 testy-zad1-main/env
 testy-zad1-main/__pycache__
 testy-zad1-main/event_files/generated/*
+cmake_install.cmake
+CMakeFiles
+CMakeCache.txt
+Makefile
+SIK_ticketserver.cbp
+ticket_server

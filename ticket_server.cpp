@@ -2,7 +2,6 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <cstdint>
-#include <fstream>
 #include <cstring>
 
 const uint16_t MIN_PORT = 0;
@@ -89,13 +88,10 @@ server_args get_server_args(int argc, char** argv) {
         exit(1);
     }
     else {
-        std::ifstream f(file);
-        if (!f.good()) {
+        if (access(file, F_OK) == -1) {
             std::cerr << "file does not exist.\n";
             exit(1);
         }
-
-        f.close();
 
         std::string file_c(file);
         serverArgs.file = file_c;
