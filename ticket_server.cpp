@@ -297,9 +297,9 @@ unsigned long parse_numeric_argument(const char* arg, const std::string& name, u
 }
 
 ServerArgs get_server_args(int argc, char** argv) {
-    char* file = nullptr;
-    char* port = nullptr;
-    char* timeout = nullptr;
+    char* file;
+    char* port;
+    char* timeout;
     int number_of_used_flags = 0;
     bool file_set = false;
 
@@ -310,44 +310,39 @@ ServerArgs get_server_args(int argc, char** argv) {
 
     while ((c = getopt(argc, argv, "f:p:t:")) != -1) {
         switch (c) {
-            case 'f':
+            case 'f': {
                 number_of_used_flags += 1;
                 file = optarg;
 
-                if (file == nullptr) {
-                    std::cerr << USAGE_ERROR_MESSAGE;
+                if (access(file, F_OK) == -1) {
+                    std::cerr << "Error: selected file_path does not exist\n";
                     exit(1);
                 }
-                else {
-                    if (access(file, F_OK) == -1) {
-                        std::cerr << "Error: selected file_path does not exist\n";
-                        exit(1);
-                    }
 
-                    std::string file_c(file);
-                    server_args.file_path = file_c;
-                    file_set = true;
-                }
+                std::string file_c(file);
+                server_args.file_path = file_c;
+                file_set = true;
+
                 break;
-            case 'p':
+            }
+            case 'p': {
                 number_of_used_flags += 1;
                 port = optarg;
+                server_args.port = parse_numeric_argument(port, "port", MIN_PORT, MAX_PORT);
 
-                if (port != nullptr) {
-                    server_args.port = parse_numeric_argument(port, "port", MIN_PORT, MAX_PORT);
-                }
                 break;
-            case 't':
+            }
+            case 't': {
                 number_of_used_flags += 1;
                 timeout = optarg;
+                server_args.timeout = parse_numeric_argument(timeout, "timeout", MIN_TIMEOUT, MAX_TIMEOUT);
 
-                if (timeout != nullptr) {
-                    server_args.timeout = parse_numeric_argument(timeout, "timeout", MIN_TIMEOUT, MAX_TIMEOUT);
-                }
                 break;
-            default:
+            }
+            default: {
                 std::cerr << USAGE_ERROR_MESSAGE;
                 exit(1);
+            }
         }
     }
 
