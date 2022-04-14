@@ -184,6 +184,7 @@ public:
             if (reservation_pair.second > time) break;
             queue_reservations.pop();
             Reservation& reservation = reservations.at(reservation_pair.first);
+            if (reservation.get_first_ticket_number() != 0) continue;
             events[reservation.get_event_id()].ticket_count += reservation.get_ticket_count();
             reservations.erase(reservation.get_reservation_id());
         }
@@ -209,6 +210,10 @@ public:
     }
 
     Reservation get_reservation(get_reservation_message message, uint64_t time) {
+        if (message.ticket_count == 0) throw bad_request_exception();
+        uint64_t cmp = TICKET_LENGTH * message.ticket_count + 7;
+        if (cmp > UDP_DATAGRAM_MAX_SIZE) throw bad_request_exception();
+
         try {
             event_t& event = events.at(message.event_id);
 
@@ -234,7 +239,7 @@ public:
         std::vector<std::string> tickets;
 
         try {
-            auto reservation = reservations.at(message.reservation_id);
+            auto& reservation = reservations.at(message.reservation_id);
             auto cookie_cmp = std::strncmp(message.cookie, reservation.get_cookie().c_str(), COOKIE_LENGTH);
 
             if (cookie_cmp == 0) {
@@ -465,6 +470,7 @@ get_reservation_message change_reservation_endian(const get_reservation_message&
 get_tickets_message change_tickets_endian(const get_tickets_message& message) {
     get_tickets_message result{};
     result.reservation_id = ntohl(message.reservation_id);
+    memcpy(result.cookie, message.cookie, COOKIE_LENGTH);
 
     return result;
 }
@@ -516,6 +522,7 @@ void send_reservation(const Reservation& reservation, int socket_fd, const socka
 void send_tickets(const std::vector<std::string>& tickets, uint32_t reservation_id, int socket_fd,
                   const sockaddr_in *client_address) {
     auto tickets_msg = (tickets_message*) new char[tickets.size() * TICKET_LENGTH + 7];
+    tickets_msg->message_id = message_id_t::TICKETS;
     tickets_msg->reservation_id = reservation_id;
     tickets_msg->ticket_count = htons(tickets.size());
 

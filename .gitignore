@@ -1,4 +1,5 @@
 cmake-build-debug
+.cmake
 .idea
 Testing
 testy-zad1-main/env
