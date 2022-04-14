@@ -301,6 +301,7 @@ ServerArgs get_server_args(int argc, char** argv) {
     char* port = nullptr;
     char* timeout = nullptr;
     int number_of_used_flags = 0;
+    bool file_set = false;
 
     ServerArgs server_args;
     int c;
@@ -312,14 +313,37 @@ ServerArgs get_server_args(int argc, char** argv) {
             case 'f':
                 number_of_used_flags += 1;
                 file = optarg;
+
+                if (file == nullptr) {
+                    std::cerr << USAGE_ERROR_MESSAGE;
+                    exit(1);
+                }
+                else {
+                    if (access(file, F_OK) == -1) {
+                        std::cerr << "Error: selected file_path does not exist\n";
+                        exit(1);
+                    }
+
+                    std::string file_c(file);
+                    server_args.file_path = file_c;
+                    file_set = true;
+                }
                 break;
             case 'p':
                 number_of_used_flags += 1;
                 port = optarg;
+
+                if (port != nullptr) {
+                    server_args.port = parse_numeric_argument(port, "port", MIN_PORT, MAX_PORT);
+                }
                 break;
             case 't':
                 number_of_used_flags += 1;
                 timeout = optarg;
+
+                if (timeout != nullptr) {
+                    server_args.timeout = parse_numeric_argument(timeout, "timeout", MIN_TIMEOUT, MAX_TIMEOUT);
+                }
                 break;
             default:
                 std::cerr << USAGE_ERROR_MESSAGE;
@@ -327,31 +351,14 @@ ServerArgs get_server_args(int argc, char** argv) {
         }
     }
 
-    if ((argc - 1) % 2 != 0 || (argc - 1) != (number_of_used_flags * 2)) {
+    if ((argc - 1) > (number_of_used_flags * 2)) {
         std::cerr << USAGE_ERROR_MESSAGE;
         exit(1);
     }
 
-    if (file == nullptr) {
+    if (!file_set) {
         std::cerr << USAGE_ERROR_MESSAGE;
         exit(1);
-    }
-    else {
-        if (access(file, F_OK) == -1) {
-            std::cerr << "Error: selected file_path does not exist\n";
-            exit(1);
-        }
-
-        std::string file_c(file);
-        server_args.file_path = file_c;
-    }
-
-    if (port != nullptr) {
-        server_args.port = parse_numeric_argument(port, "port", MIN_PORT, MAX_PORT);
-    }
-
-    if (timeout != nullptr) {
-        server_args.timeout = parse_numeric_argument(timeout, "timeout", MIN_TIMEOUT, MAX_TIMEOUT);
     }
 
     return server_args;
@@ -453,9 +460,7 @@ void send_message(int socket_fd, const sockaddr_in *client_address, const void *
     ssize_t sent_length = sendto(socket_fd, message, length, 0, (sockaddr*) client_address, address_length);
 
     if (sent_length != (ssize_t) length) {
-        std::cerr << "Sending message failed. Terminating...\n";
-        close(socket_fd);
-        exit(1);
+        throw std::runtime_error("Sending message failed.");
     }
 }
 
@@ -493,7 +498,15 @@ void send_events(const std::pair<std::vector<Event>, uint64_t>& events, int sock
         pointer_cpy += event.description.length();
     }
 
-    send_message(socket_fd, client_address, message, events.second + 1);
+    try {
+        send_message(socket_fd, client_address, message, events.second + 1);
+    }
+    catch (std::runtime_error& e) {
+        std::cerr << e.what() << " Terminating...\n";
+        delete [] message;
+        close(socket_fd);
+        exit(1);
+    }
 
     delete [] message;
 }
@@ -507,8 +520,14 @@ void send_reservation(const Reservation& reservation, int socket_fd, const socka
     reservation_msg.expiration_time = htobe64(reservation.get_expiration_time());
     memcpy(reservation_msg.cookie, reservation.get_cookie().c_str(), COOKIE_LENGTH);
 
-
-    send_message(socket_fd, client_address, &reservation_msg, sizeof(reservation_msg));
+    try {
+        send_message(socket_fd, client_address, &reservation_msg, sizeof(reservation_msg));
+    }
+    catch (std::runtime_error& e) {
+        std::cerr << e.what() << " Terminating...\n";
+        close(socket_fd);
+        exit(1);
+    }
 }
 
 void send_tickets(const std::vector<std::string>& tickets, uint32_t reservation_id, int socket_fd,
@@ -525,7 +544,15 @@ void send_tickets(const std::vector<std::string>& tickets, uint32_t reservation_
         pointer_cpy += TICKET_LENGTH;
     }
 
-    send_message(socket_fd, client_address, tickets_msg, tickets.size() * TICKET_LENGTH + 7);
+    try {
+        send_message(socket_fd, client_address, tickets_msg, tickets.size() * TICKET_LENGTH + 7);
+    }
+    catch (std::runtime_error& e) {
+        std::cerr << e.what() << " Terminating...\n";
+        delete tickets_msg;
+        close(socket_fd);
+        exit(1);
+    }
 
     delete tickets_msg;
 }
@@ -534,7 +561,15 @@ void send_bad_request(uint32_t id, int socket_fd, const sockaddr_in *client_addr
     BadRequestMessage bad_request_msg{};
     bad_request_msg.message_id = MessageID::BAD_REQUEST;
     bad_request_msg.id = id;
-    send_message(socket_fd, client_address, &bad_request_msg, sizeof(bad_request_msg));
+
+    try {
+        send_message(socket_fd, client_address, &bad_request_msg, sizeof(bad_request_msg));
+    }
+    catch (std::runtime_error& e) {
+        std::cerr << e.what() << " Terminating...\n";
+        close(socket_fd);
+        exit(1);
+    }
 }
 
 int main(int argc, char** argv) {
