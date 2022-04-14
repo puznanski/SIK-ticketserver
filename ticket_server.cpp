@@ -10,10 +10,11 @@
 #include <queue>
 #include <utility>
 #include <unordered_map>
-#include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+
+constexpr const char* USAGE_ERROR_MESSAGE = "Usage: -f <path_to_events_file> [-p <port>] [-t <timeout>]\n";
 
 const uint16_t MIN_PORT = 0;
 const uint16_t MAX_PORT = 65535;
@@ -33,21 +34,20 @@ const uint8_t COOKIE_LENGTH = 48;
 
 const uint32_t ID_LIMIT = 999999;
 const uint64_t UDP_DATAGRAM_MAX_SIZE = 65507;
-const uint64_t MAX_RECEIVE_SIZE = 53;
 
-struct server_args {
-    std::string file;
+struct ServerArgs {
+    std::string file_path;
     uint16_t port = DEFAULT_PORT;
     uint32_t timeout = DEFAULT_TIMEOUT;
 };
 
-struct event_t {
+struct Event {
     uint32_t event_id = 0;
     std::string description;
     uint16_t ticket_count = 0;
 };
 
-enum message_id_t : uint8_t {
+enum MessageID : uint8_t {
     GET_EVENTS = 1,
     EVENTS = 2,
     GET_RESERVATION = 3,
@@ -57,34 +57,27 @@ enum message_id_t : uint8_t {
     BAD_REQUEST = 255
 };
 
-struct __attribute__((__packed__)) get_reservation_message {
+struct __attribute__((__packed__)) GetReservationMessage {
     uint32_t event_id;
     uint16_t ticket_count;
 };
 
-struct __attribute__((__packed__)) get_tickets_message {
+struct __attribute__((__packed__)) GetTicketsMessage {
     uint32_t reservation_id;
     char cookie[COOKIE_LENGTH];
 };
 
 
-struct received_message_t {
-    message_id_t message_id;
+struct ReceivedMessage {
+    MessageID message_id;
     union {
-        get_reservation_message reservation_msg;
-        get_tickets_message tickets_msg;
+        GetReservationMessage reservation_msg;
+        GetTicketsMessage tickets_msg;
     };
 };
 
-/*struct __attribute__((__packed__)) event_message {
-    uint32_t event_id;
-    uint16_t ticket_count;
-    uint8_t description_length;
-    char description[];
-};*/
-
-struct __attribute__((__packed__)) reservation_message {
-    uint8_t message_id = message_id_t::RESERVATION;
+struct __attribute__((__packed__)) ReservationMessage {
+    uint8_t message_id;
     uint32_t reservation_id;
     uint32_t event_id;
     uint16_t ticket_count;
@@ -92,19 +85,19 @@ struct __attribute__((__packed__)) reservation_message {
     uint64_t expiration_time;
 };
 
-struct __attribute__((__packed__)) tickets_message {
-    uint8_t message_id = message_id_t::TICKETS;
+struct __attribute__((__packed__)) TicketsMessage {
+    uint8_t message_id;
     uint32_t reservation_id;
     uint16_t ticket_count;
     char tickets[];
 };
 
-struct __attribute__((__packed__)) bad_request_message {
-    uint8_t message_id = message_id_t::BAD_REQUEST;
+struct __attribute__((__packed__)) BadRequestMessage {
+    uint8_t message_id;
     uint32_t id;
 };
 
-std::vector<event_t> get_events_from_file(const std::string& file_name);
+std::vector<Event> get_events_from_file(const std::string& file_path);
 std::string generate_ticket_code(uint64_t ticket_number);
 std::string generate_cookie();
 
@@ -158,8 +151,8 @@ public:
         return expiration_time;
     }
 
-    void set_first_ticket_number(uint64_t first_ticket_number) {
-        this->first_ticket_number = first_ticket_number;
+    void set_first_ticket_number(uint64_t number) {
+        first_ticket_number = number;
     }
 };
 
@@ -167,17 +160,24 @@ class TicketController {
 private:
     std::queue<std::pair<uint32_t, uint64_t>> queue_reservations;
     std::unordered_map<uint32_t, Reservation> reservations;
-    std::vector<event_t> events;
+    std::vector<Event> events;
     uint64_t ticket_counter = 1;
     uint32_t reservation_counter = ID_LIMIT + 1;
     uint64_t timeout;
 
 public:
-    explicit TicketController(const server_args& serverArgs) {
-        timeout = serverArgs.timeout;
-        events = get_events_from_file(serverArgs.file);
+    explicit TicketController(const ServerArgs& server_args) {
+        timeout = server_args.timeout;
+        events = get_events_from_file(server_args.file_path);
     }
 
+    /*
+     *  We store all reservations in reservation queue. After each message read inside the main loop, we get time and
+     *  check if the reservations are expired. If the time set for collecting the reservation have passed and
+     *  the reservation have not been collected, we remove it from the queue and map of reservations and return
+     *  tickets to the bank of available tickets. If reservation have been collected earlier, we remove it from the
+     *  queue, but not from the map.
+     */
     void remove_expired_reservations(uint64_t time) {
         while (!queue_reservations.empty()) {
             auto reservation_pair = queue_reservations.front();
@@ -190,8 +190,8 @@ public:
         }
     }
 
-    std::pair<std::vector<event_t>, uint64_t> get_events() {
-        std::vector<event_t> result;
+    std::pair<std::vector<Event>, uint64_t> get_events() {
+        std::vector<Event> result;
         uint64_t message_size = 0;
 
         for (const auto& a: events) {
@@ -209,19 +209,20 @@ public:
         return {result, message_size};
     }
 
-    Reservation get_reservation(get_reservation_message message, uint64_t time) {
+    Reservation get_reservation(GetReservationMessage message, uint64_t time) {
         if (message.ticket_count == 0) throw bad_request_exception();
         uint64_t cmp = TICKET_LENGTH * message.ticket_count + 7;
         if (cmp > UDP_DATAGRAM_MAX_SIZE) throw bad_request_exception();
 
         try {
-            event_t& event = events.at(message.event_id);
+            Event& event = events.at(message.event_id);
 
             if (event.ticket_count < message.ticket_count) {
                 throw bad_request_exception();
             }
             else {
-                Reservation new_reservation(timeout, reservation_counter, message.event_id, message.ticket_count, time);
+                Reservation new_reservation(timeout, reservation_counter, message.event_id,
+                                            message.ticket_count, time);
                 event.ticket_count -= message.ticket_count;
                 reservation_counter += 1;
                 reservations.insert({new_reservation.get_reservation_id(), new_reservation});
@@ -235,7 +236,7 @@ public:
         }
     }
 
-    std::vector<std::string> get_tickets(get_tickets_message message) {
+    std::vector<std::string> get_tickets(GetTicketsMessage message) {
         std::vector<std::string> tickets;
 
         try {
@@ -267,7 +268,7 @@ public:
 };
 
 unsigned long parse_numeric_argument(const char* arg, const std::string& name, uint32_t min, uint32_t max) {
-    unsigned long value;
+    uint64_t value;
 
     try {
         std::size_t position;
@@ -295,13 +296,13 @@ unsigned long parse_numeric_argument(const char* arg, const std::string& name, u
     return value;
 }
 
-server_args get_server_args(int argc, char** argv) {
+ServerArgs get_server_args(int argc, char** argv) {
     char* file = nullptr;
     char* port = nullptr;
     char* timeout = nullptr;
     int number_of_used_flags = 0;
 
-    server_args serverArgs;
+    ServerArgs server_args;
     int c;
 
     opterr = 0;
@@ -321,48 +322,48 @@ server_args get_server_args(int argc, char** argv) {
                 timeout = optarg;
                 break;
             default:
-                std::cerr << "Unrecognized flag.\n";
+                std::cerr << USAGE_ERROR_MESSAGE;
                 exit(1);
         }
     }
 
     if ((argc - 1) % 2 != 0 || (argc - 1) != (number_of_used_flags * 2)) {
-        std::cerr << "Numbers of used flags and arguments do not match\n";
+        std::cerr << USAGE_ERROR_MESSAGE;
         exit(1);
     }
 
     if (file == nullptr) {
-        std::cerr << "file argument is required.\n";
+        std::cerr << USAGE_ERROR_MESSAGE;
         exit(1);
     }
     else {
         if (access(file, F_OK) == -1) {
-            std::cerr << "file does not exist.\n";
+            std::cerr << "Error: selected file_path does not exist\n";
             exit(1);
         }
 
         std::string file_c(file);
-        serverArgs.file = file_c;
+        server_args.file_path = file_c;
     }
 
     if (port != nullptr) {
-        serverArgs.port = parse_numeric_argument(port, "port", MIN_PORT, MAX_PORT);
+        server_args.port = parse_numeric_argument(port, "port", MIN_PORT, MAX_PORT);
     }
 
     if (timeout != nullptr) {
-        serverArgs.timeout = parse_numeric_argument(timeout, "timeout", MIN_TIMEOUT, MAX_TIMEOUT);
+        server_args.timeout = parse_numeric_argument(timeout, "timeout", MIN_TIMEOUT, MAX_TIMEOUT);
     }
 
-    return serverArgs;
+    return server_args;
 }
 
-std::vector<event_t> get_events_from_file(const std::string& file_name) {
-    std::vector<event_t> events;
+std::vector<Event> get_events_from_file(const std::string& file_path) {
+    std::vector<Event> events;
     std::string line;
-    std::ifstream file(file_name);
+    std::ifstream file(file_path);
 
     while (getline(file, line)) {
-        event_t event;
+        Event event;
         event.event_id = events.size();
         event.description = line;
         getline(file, line);
@@ -414,20 +415,18 @@ std::string generate_cookie() {
 }
 
 int bind_socket(uint16_t port) {
-    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0); // creating IPv4 UDP socket
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
 
     if (socket_fd <= 0) {
         std::cerr << "Could not open socket\n";
         exit(1);
     }
-    // after socket() call; we should close(sock) on any execution path;
 
     sockaddr_in server_address{};
-    server_address.sin_family = AF_INET; // IPv4
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY); // listening on all interfaces
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
     server_address.sin_port = htons(port);
 
-    // bind the socket to a concrete address
     auto ret = bind(socket_fd, (struct sockaddr *) &server_address, (socklen_t) sizeof(server_address));
 
     if (ret == -1) {
@@ -438,13 +437,13 @@ int bind_socket(uint16_t port) {
     return socket_fd;
 }
 
-void read_message(int socket_fd, sockaddr_in *client_address, received_message_t *buffer) {
+void read_message(int socket_fd, sockaddr_in *client_address, ReceivedMessage *buffer) {
     auto address_length = (socklen_t) sizeof(*client_address);
-    errno = 0;
-    ssize_t len = recvfrom(socket_fd, buffer, sizeof(received_message_t), 0, (sockaddr*) client_address, &address_length);
+    ssize_t len = recvfrom(socket_fd, buffer, sizeof(ReceivedMessage), 0, (sockaddr*) client_address, &address_length);
 
     if (len < 0) {
-        std::cerr << "Wrong message\n";
+        std::cerr << "Reading message failed. Terminating...\n";
+        close(socket_fd);
         exit(1);
     }
 }
@@ -454,42 +453,34 @@ void send_message(int socket_fd, const sockaddr_in *client_address, const void *
     ssize_t sent_length = sendto(socket_fd, message, length, 0, (sockaddr*) client_address, address_length);
 
     if (sent_length != (ssize_t) length) {
-        std::cerr << "Wrong message\n";
+        std::cerr << "Sending message failed. Terminating...\n";
+        close(socket_fd);
         exit(1);
     }
 }
 
-get_reservation_message change_reservation_endian(const get_reservation_message& message) {
-    get_reservation_message result{};
+GetReservationMessage change_reservation_endian(const GetReservationMessage& message) {
+    GetReservationMessage result{};
     result.ticket_count = ntohs(message.ticket_count);
     result.event_id = ntohl(message.event_id);
 
     return result;
 }
 
-get_tickets_message change_tickets_endian(const get_tickets_message& message) {
-    get_tickets_message result{};
+GetTicketsMessage change_tickets_endian(const GetTicketsMessage& message) {
+    GetTicketsMessage result{};
     result.reservation_id = ntohl(message.reservation_id);
     memcpy(result.cookie, message.cookie, COOKIE_LENGTH);
 
     return result;
 }
 
-void send_events(const std::pair<std::vector<event_t>, uint64_t>& events, int socket_fd,
-                            const sockaddr_in *client_address) {
+void send_events(const std::pair<std::vector<Event>, uint64_t>& events, int socket_fd,
+                 const sockaddr_in *client_address) {
     char* message = new char[events.second + 1];
 
-    *((uint8_t*)message) = message_id_t::EVENTS;
+    *((uint8_t*)message) = MessageID::EVENTS;
     char* pointer_cpy = message + 1;
-
-    /*for (std::size_t i = 0; i < events.first.size(); i++) {
-        event_message event_msg{};
-        event_msg.event_id = ntohl(events.first[i].event_id);
-        event_msg.ticket_count = ntohs(events.first[i].ticket_count);
-        event_msg.description_length = events.first[i].description.length();
-        memcpy(event_msg.description, events.first[i].description.c_str(), events.first[i].description.length());
-        *((event_message*)pointer_cpy) events = event_msg;
-    }*/
 
     for (const auto& event : events.first) {
         *((uint32_t*)pointer_cpy) = htonl(event.event_id);
@@ -508,7 +499,8 @@ void send_events(const std::pair<std::vector<event_t>, uint64_t>& events, int so
 }
 
 void send_reservation(const Reservation& reservation, int socket_fd, const sockaddr_in *client_address) {
-    reservation_message reservation_msg{};
+    ReservationMessage reservation_msg{};
+    reservation_msg.message_id = MessageID::RESERVATION;
     reservation_msg.ticket_count = htons(reservation.get_ticket_count());
     reservation_msg.event_id = htonl(reservation.get_event_id());
     reservation_msg.reservation_id = htonl(reservation.get_reservation_id());
@@ -521,8 +513,8 @@ void send_reservation(const Reservation& reservation, int socket_fd, const socka
 
 void send_tickets(const std::vector<std::string>& tickets, uint32_t reservation_id, int socket_fd,
                   const sockaddr_in *client_address) {
-    auto tickets_msg = (tickets_message*) new char[tickets.size() * TICKET_LENGTH + 7];
-    tickets_msg->message_id = message_id_t::TICKETS;
+    auto tickets_msg = (TicketsMessage*) new char[tickets.size() * TICKET_LENGTH + 7];
+    tickets_msg->message_id = MessageID::TICKETS;
     tickets_msg->reservation_id = reservation_id;
     tickets_msg->ticket_count = htons(tickets.size());
 
@@ -539,32 +531,35 @@ void send_tickets(const std::vector<std::string>& tickets, uint32_t reservation_
 }
 
 void send_bad_request(uint32_t id, int socket_fd, const sockaddr_in *client_address) {
-    bad_request_message bad_request_msg{};
+    BadRequestMessage bad_request_msg{};
+    bad_request_msg.message_id = MessageID::BAD_REQUEST;
     bad_request_msg.id = id;
     send_message(socket_fd, client_address, &bad_request_msg, sizeof(bad_request_msg));
 }
 
 int main(int argc, char** argv) {
-    server_args serverArgs = get_server_args(argc, argv);
-    TicketController ticketController(serverArgs);
-    int socket_fd = bind_socket(serverArgs.port);
-    received_message_t received_message{};
+    ServerArgs server_args = get_server_args(argc, argv);
+    TicketController ticket_controller(server_args);
+    int socket_fd = bind_socket(server_args.port);
+    ReceivedMessage received_message{};
     sockaddr_in client_address{};
+
+    std::cout << "Initialization complete. Listening on port " << server_args.port << "\n";
 
     while (true) {
         read_message(socket_fd, &client_address, &received_message);
         uint64_t message_time = std::time(nullptr);
-        ticketController.remove_expired_reservations(message_time);
+        ticket_controller.remove_expired_reservations(message_time);
 
         switch (received_message.message_id) {
-            case message_id_t::GET_EVENTS: {
-                auto events = ticketController.get_events();
+            case MessageID::GET_EVENTS: {
+                auto events = ticket_controller.get_events();
                 send_events(events, socket_fd, &client_address);
                 break;
             }
-            case message_id_t::GET_RESERVATION: {
+            case MessageID::GET_RESERVATION: {
                 try {
-                    auto reservation = ticketController.get_reservation(
+                    auto reservation = ticket_controller.get_reservation(
                             change_reservation_endian(received_message.reservation_msg), message_time);
                     send_reservation(reservation, socket_fd, &client_address);
                 }
@@ -574,10 +569,12 @@ int main(int argc, char** argv) {
 
                 break;
             }
-            case message_id_t::GET_TICKETS: {
+            case MessageID::GET_TICKETS: {
                 try {
-                    auto tickets = ticketController.get_tickets(change_tickets_endian(received_message.tickets_msg));
-                    send_tickets(tickets, received_message.tickets_msg.reservation_id, socket_fd, &client_address);
+                    auto tickets = ticket_controller.get_tickets(
+                            change_tickets_endian(received_message.tickets_msg));
+                    send_tickets(tickets, received_message.tickets_msg.reservation_id,
+                                 socket_fd, &client_address);
                 }
                 catch (bad_request_exception& e) {
                     send_bad_request(received_message.tickets_msg.reservation_id, socket_fd, &client_address);
